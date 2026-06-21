@@ -8,6 +8,8 @@ Small XFCE panel plugin with three panel buttons:
 
 It controls media players directly through MPRIS on the session D-Bus, so it works with players such as Firefox, Spotify, VLC, Chromium, Rhythmbox, and others that expose MPRIS controls.
 
+![XFCE MPRIS Controls Panel Plugin screenshot](screenshot.png)
+
 ## Dependencies
 
 On Debian/Ubuntu/Xubuntu:
@@ -30,9 +32,10 @@ make
 
 ## Install
 
-System install:
+From source:
 
 ```sh
+make
 sudo make install
 xfce4-panel -r
 ```
@@ -42,6 +45,18 @@ Then add it to the panel:
 1. Right click the XFCE panel.
 2. Open **Panel** -> **Add New Items...**.
 3. Add **MPRIS Controls**.
+
+## Install Prebuilt Binary
+
+If you downloaded `libmpris-controls-x86_64-linux-gnu.so` from a GitHub release on an Ubuntu/Xubuntu-style system:
+
+```sh
+sudo install -m 755 libmpris-controls-x86_64-linux-gnu.so /usr/lib/x86_64-linux-gnu/xfce4/panel/plugins/libmpris-controls.so
+sudo install -m 644 data/mpris-controls.desktop /usr/share/xfce4/panel/plugins/mpris-controls.desktop
+xfce4-panel -r
+```
+
+Prebuilt binaries are distro and architecture specific. If the plugin does not load, build from source instead.
 
 ## Uninstall
 
@@ -53,3 +68,7 @@ xfce4-panel -r
 ## Notes
 
 The plugin discovers `org.mpris.MediaPlayer2.*` names on the session D-Bus, reads `PlaybackStatus`, and sends MPRIS player methods directly.
+
+## License
+
+MIT
