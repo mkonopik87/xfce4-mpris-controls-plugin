@@ -1,0 +1,9 @@
+[Xfce Panel]
+Type=X-XFCE-PanelPlugin
+Encoding=UTF-8
+Name=MPRIS Controls
+Comment=Previous, play/pause, and next media controls
+Icon=multimedia-player
+X-XFCE-Module=mpris-controls
+X-XFCE-Internal=false
+X-XFCE-API=2.0
