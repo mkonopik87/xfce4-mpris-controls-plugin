@@ -48,13 +48,16 @@ Then add it to the panel:
 
 ## Install Prebuilt Binary
 
-If you downloaded `libmpris-controls-x86_64-linux-gnu.so` from a GitHub release on an Ubuntu/Xubuntu-style system:
+If you downloaded the precompiled binary from a GitHub release on an Ubuntu/Xubuntu-style system:
 
 ```sh
-sudo install -m 755 libmpris-controls-x86_64-linux-gnu.so /usr/lib/x86_64-linux-gnu/xfce4/panel/plugins/libmpris-controls.so
-sudo install -m 644 data/mpris-controls.desktop /usr/share/xfce4/panel/plugins/mpris-controls.desktop
+tar -xf libmpris-controls.tar.gz
+sudo install -m 755 libmpris-controls.so /usr/lib/x86_64-linux-gnu/xfce4/panel/plugins/libmpris-controls.so
+sudo install -m 644 mpris-controls.desktop /usr/share/xfce4/panel/plugins/mpris-controls.desktop
 xfce4-panel -r
 ```
+
+Then add MPRIS Controls from the XFCE panel “Add New Items” menu.
 
 Prebuilt binaries are distro and architecture specific. If the plugin does not load, build from source instead.
 
