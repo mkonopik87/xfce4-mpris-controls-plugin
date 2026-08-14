@@ -6,6 +6,8 @@ Small XFCE panel plugin with three panel buttons:
 - play/pause
 - next track
 
+Hover the play/pause button to see the active player's cover art, track title, artist, and album. Artwork is loaded from the optional MPRIS `mpris:artUrl` field, with a generic media icon used when artwork is unavailable.
+
 It controls media players directly through MPRIS on the session D-Bus, so it works with players such as Firefox, Spotify, VLC, Chromium, Rhythmbox, and others that expose MPRIS controls.
 
 ![XFCE MPRIS Controls Panel Plugin screenshot](screenshot.png)
@@ -60,6 +62,16 @@ xfce4-panel -r
 Then add MPRIS Controls from the XFCE panel “Add New Items” menu.
 
 Prebuilt binaries are distro and architecture specific. If the plugin does not load, build from source instead.
+
+## Settings
+
+Right click the plugin and select **Properties** to configure it. Settings are saved separately for each panel instance.
+
+- Enable or disable the track information popup.
+- Show or hide cover art, artist, and album information.
+- Choose an instant, short, or long hover delay.
+- Position the popup automatically, above the panel, or below the panel.
+- Show or hide the previous and next buttons.
 
 ## Uninstall
 
