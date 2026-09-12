@@ -71,7 +71,14 @@ Right click the plugin and select **Properties** to configure it. Settings are s
 - Show or hide cover art, artist, and album information.
 - Choose an instant, short, or long hover delay.
 - Position the popup automatically, above the panel, or below the panel.
+- Enable a panel track label showing the track name and artist.
+- Place the panel track label before or after the playback controls.
+- Use dynamic width or a fixed-width label with scrolling text for long tracks.
+- Choose the fixed label width in pixels.
+- Use the panel theme's text color or choose a custom color.
 - Show or hide the previous and next buttons.
+
+The panel track label is disabled by default to preserve the compact controls-only layout.
 
 ## Uninstall
 

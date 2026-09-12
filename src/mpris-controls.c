@@ -8,6 +8,18 @@ typedef enum
     POPUP_POSITION_BELOW
 } PopupPosition;
 
+typedef enum
+{
+    PANEL_TRACK_POSITION_BEFORE,
+    PANEL_TRACK_POSITION_AFTER
+} PanelTrackPosition;
+
+typedef enum
+{
+    PANEL_TRACK_WIDTH_DYNAMIC,
+    PANEL_TRACK_WIDTH_FIXED
+} PanelTrackWidth;
+
 typedef struct
 {
     XfcePanelPlugin *plugin;
@@ -16,6 +28,8 @@ typedef struct
     GtkWidget *play_pause_button;
     GtkWidget *play_pause_image;
     GtkWidget *next_button;
+    GtkWidget *panel_track_container;
+    GtkWidget *panel_track_label;
     GtkWidget *metadata_window;
     GtkWidget *artwork_image;
     GtkWidget *title_label;
@@ -23,14 +37,23 @@ typedef struct
     GtkWidget *album_label;
     GDBusConnection *dbus_connection;
     gchar *active_player;
+    gchar *panel_track_text;
     gchar *artwork_url;
     GCancellable *artwork_cancellable;
     guint status_timeout_id;
     guint hover_show_timeout_id;
     guint hover_hide_timeout_id;
+    guint panel_scroll_timeout_id;
+    guint panel_scroll_position;
     guint hover_delay_ms;
+    guint panel_fixed_width;
     PopupPosition popup_position;
+    PanelTrackPosition panel_track_position;
+    PanelTrackWidth panel_track_width;
+    GdkRGBA panel_text_color;
     gboolean hover_enabled;
+    gboolean show_panel_track;
+    gboolean panel_text_color_custom;
     gboolean show_artwork;
     gboolean show_artist;
     gboolean show_album;
@@ -287,6 +310,201 @@ get_player_metadata(MprisControlsPlugin *controls,
     g_variant_unref(reply);
 
     return found;
+}
+
+static void
+stop_panel_track_scroll(MprisControlsPlugin *controls)
+{
+    if (controls->panel_scroll_timeout_id != 0)
+    {
+        g_source_remove(controls->panel_scroll_timeout_id);
+        controls->panel_scroll_timeout_id = 0;
+    }
+}
+
+static gboolean
+panel_track_needs_scroll(MprisControlsPlugin *controls)
+{
+    PangoLayout *layout;
+    gint width;
+
+    if (!controls->show_panel_track
+        || controls->panel_track_width != PANEL_TRACK_WIDTH_FIXED
+        || controls->panel_track_text == NULL
+        || *controls->panel_track_text == '\0')
+    {
+        return FALSE;
+    }
+
+    layout = gtk_widget_create_pango_layout(controls->panel_track_label,
+                                            controls->panel_track_text);
+    pango_layout_get_pixel_size(layout, &width, NULL);
+    g_object_unref(layout);
+
+    return width > MAX(1, (gint) controls->panel_fixed_width - 8);
+}
+
+static gboolean
+panel_track_scroll(gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+    gsize cycle_length;
+
+    if (!panel_track_needs_scroll(controls))
+    {
+        controls->panel_scroll_timeout_id = 0;
+        gtk_widget_queue_draw(controls->panel_track_label);
+        return G_SOURCE_REMOVE;
+    }
+
+    cycle_length = (gsize) g_utf8_strlen(controls->panel_track_text, -1) + 4;
+    controls->panel_scroll_position++;
+    if (controls->panel_scroll_position >= cycle_length)
+        controls->panel_scroll_position = 0;
+    gtk_widget_queue_draw(controls->panel_track_label);
+
+    return G_SOURCE_CONTINUE;
+}
+
+static gint
+panel_track_text_width(MprisControlsPlugin *controls)
+{
+    PangoLayout *layout;
+    gint width;
+
+    if (controls->panel_track_text == NULL || *controls->panel_track_text == '\0')
+        return 8;
+
+    layout = gtk_widget_create_pango_layout(controls->panel_track_label,
+                                            controls->panel_track_text);
+    pango_layout_get_pixel_size(layout, &width, NULL);
+    g_object_unref(layout);
+
+    return width + 8;
+}
+
+static gboolean
+panel_track_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+    GtkStyleContext *style_context;
+    PangoLayout *layout;
+    PangoRectangle position;
+    GdkRGBA color;
+    GtkAllocation allocation;
+    gchar *cycle_text = NULL;
+    const gchar *layout_text;
+    gint text_height;
+    gint x = 4;
+    gint y;
+
+    if (controls->panel_track_text == NULL || *controls->panel_track_text == '\0')
+        return FALSE;
+
+    gtk_widget_get_allocation(widget, &allocation);
+    layout_text = controls->panel_track_text;
+    if (panel_track_needs_scroll(controls))
+    {
+        cycle_text = g_strconcat(controls->panel_track_text,
+                                 "    ",
+                                 controls->panel_track_text,
+                                 NULL);
+        layout_text = cycle_text;
+    }
+
+    layout = gtk_widget_create_pango_layout(widget, layout_text);
+    pango_layout_set_single_paragraph_mode(layout, TRUE);
+    pango_layout_get_pixel_size(layout, NULL, &text_height);
+    y = (allocation.height - text_height) / 2;
+
+    if (cycle_text != NULL)
+    {
+        const gchar *offset = g_utf8_offset_to_pointer(cycle_text,
+                                                        (glong) controls->panel_scroll_position);
+        gint byte_offset = (gint) (offset - cycle_text);
+
+        pango_layout_index_to_pos(layout, byte_offset, &position);
+        x -= PANGO_PIXELS(position.x);
+    }
+
+    cairo_save(cr);
+    cairo_rectangle(cr, 4, 0, MAX(1, allocation.width - 8), allocation.height);
+    cairo_clip(cr);
+    cairo_move_to(cr, x, y);
+    style_context = gtk_widget_get_style_context(widget);
+    if (controls->panel_text_color_custom)
+        color = controls->panel_text_color;
+    else
+        gtk_style_context_get_color(style_context,
+                                    gtk_widget_get_state_flags(widget),
+                                    &color);
+    gdk_cairo_set_source_rgba(cr, &color);
+    pango_cairo_show_layout(cr, layout);
+    cairo_restore(cr);
+
+    g_object_unref(layout);
+    g_free(cycle_text);
+
+    return FALSE;
+}
+
+static void
+update_panel_track_display(MprisControlsPlugin *controls)
+{
+    stop_panel_track_scroll(controls);
+    controls->panel_scroll_position = 0;
+
+    gtk_widget_set_size_request(controls->panel_track_container,
+                                controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED
+                                    ? (gint) controls->panel_fixed_width
+                                    : panel_track_text_width(controls),
+                                -1);
+    gtk_widget_queue_resize(controls->panel_track_container);
+    gtk_widget_queue_draw(controls->panel_track_label);
+
+    if (panel_track_needs_scroll(controls))
+    {
+        controls->panel_scroll_timeout_id = g_timeout_add(180,
+                                                           panel_track_scroll,
+                                                           controls);
+    }
+}
+
+static void
+set_panel_track_text(MprisControlsPlugin *controls, const gchar *text)
+{
+    if (g_strcmp0(controls->panel_track_text, text) == 0)
+        return;
+
+    g_free(controls->panel_track_text);
+    controls->panel_track_text = g_strdup(text);
+    update_panel_track_display(controls);
+}
+
+static void
+refresh_panel_track_label(MprisControlsPlugin *controls)
+{
+    gchar *title = NULL;
+    gchar *artist = NULL;
+    gchar *panel_text;
+
+    if (controls->active_player != NULL)
+        get_player_metadata(controls, controls->active_player, &title, &artist, NULL, NULL);
+
+    if (title != NULL && *title != '\0' && artist != NULL && *artist != '\0')
+        panel_text = g_strdup_printf("%s - %s", title, artist);
+    else if (title != NULL && *title != '\0')
+        panel_text = g_strdup(title);
+    else if (artist != NULL && *artist != '\0')
+        panel_text = g_strdup(artist);
+    else
+        panel_text = g_strdup("No track playing");
+
+    set_panel_track_text(controls, panel_text);
+
+    g_free(panel_text);
+    g_free(title);
+    g_free(artist);
 }
 
 static gboolean
@@ -695,6 +913,8 @@ refresh_play_pause_state(gpointer user_data)
     else
         set_play_pause_state(controls, FALSE);
 
+    refresh_panel_track_label(controls);
+
     if (controls->hover_enabled && gtk_widget_get_visible(controls->metadata_window))
         refresh_metadata_window(controls);
 
@@ -768,16 +988,23 @@ load_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
 {
     GKeyFile *key_file;
     gchar *filename;
+    gchar *color_string;
     gint popup_position;
 
     controls->hover_enabled = TRUE;
+    controls->show_panel_track = FALSE;
     controls->show_artwork = TRUE;
     controls->show_artist = TRUE;
     controls->show_album = TRUE;
     controls->show_previous = TRUE;
     controls->show_next = TRUE;
     controls->hover_delay_ms = 300;
+    controls->panel_fixed_width = 220;
     controls->popup_position = POPUP_POSITION_AUTOMATIC;
+    controls->panel_track_position = PANEL_TRACK_POSITION_AFTER;
+    controls->panel_track_width = PANEL_TRACK_WIDTH_DYNAMIC;
+    gdk_rgba_parse(&controls->panel_text_color, "#ffffff");
+    controls->panel_text_color_custom = FALSE;
     filename = xfce_panel_plugin_lookup_rc_file(plugin);
     if (filename == NULL)
         return;
@@ -786,6 +1013,7 @@ load_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
     if (g_key_file_load_from_file(key_file, filename, G_KEY_FILE_NONE, NULL))
     {
         controls->hover_enabled = key_file_get_boolean_default(key_file, "hover-enabled", TRUE);
+        controls->show_panel_track = key_file_get_boolean_default(key_file, "show-panel-track", FALSE);
         controls->show_artwork = key_file_get_boolean_default(key_file, "show-artwork", TRUE);
         controls->show_artist = key_file_get_boolean_default(key_file, "show-artist", TRUE);
         controls->show_album = key_file_get_boolean_default(key_file, "show-album", TRUE);
@@ -797,6 +1025,25 @@ load_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
         popup_position = key_file_get_integer_default(key_file, "popup-position", POPUP_POSITION_AUTOMATIC);
         if (popup_position >= POPUP_POSITION_AUTOMATIC && popup_position <= POPUP_POSITION_BELOW)
             controls->popup_position = popup_position;
+
+        popup_position = key_file_get_integer_default(key_file, "panel-track-position", PANEL_TRACK_POSITION_AFTER);
+        if (popup_position >= PANEL_TRACK_POSITION_BEFORE && popup_position <= PANEL_TRACK_POSITION_AFTER)
+            controls->panel_track_position = popup_position;
+
+        popup_position = key_file_get_integer_default(key_file, "panel-track-width", PANEL_TRACK_WIDTH_DYNAMIC);
+        if (popup_position >= PANEL_TRACK_WIDTH_DYNAMIC && popup_position <= PANEL_TRACK_WIDTH_FIXED)
+            controls->panel_track_width = popup_position;
+
+        controls->panel_fixed_width = CLAMP(key_file_get_integer_default(key_file, "panel-fixed-width", 220), 100, 600);
+        controls->panel_text_color_custom = key_file_get_boolean_default(key_file,
+                                                                          "panel-text-color-custom",
+                                                                          FALSE);
+        color_string = g_key_file_get_string(key_file, "Settings", "panel-text-color", NULL);
+        if (color_string != NULL)
+        {
+            gdk_rgba_parse(&controls->panel_text_color, color_string);
+            g_free(color_string);
+        }
     }
 
     g_key_file_unref(key_file);
@@ -808,6 +1055,7 @@ save_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
 {
     GKeyFile *key_file;
     gchar *filename;
+    gchar *color_string;
     gchar *data;
     gsize length;
     GError *error = NULL;
@@ -818,6 +1066,7 @@ save_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
 
     key_file = g_key_file_new();
     g_key_file_set_boolean(key_file, "Settings", "hover-enabled", controls->hover_enabled);
+    g_key_file_set_boolean(key_file, "Settings", "show-panel-track", controls->show_panel_track);
     g_key_file_set_boolean(key_file, "Settings", "show-artwork", controls->show_artwork);
     g_key_file_set_boolean(key_file, "Settings", "show-artist", controls->show_artist);
     g_key_file_set_boolean(key_file, "Settings", "show-album", controls->show_album);
@@ -825,6 +1074,16 @@ save_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
     g_key_file_set_boolean(key_file, "Settings", "show-next", controls->show_next);
     g_key_file_set_integer(key_file, "Settings", "hover-delay-ms", controls->hover_delay_ms);
     g_key_file_set_integer(key_file, "Settings", "popup-position", controls->popup_position);
+    g_key_file_set_integer(key_file, "Settings", "panel-track-position", controls->panel_track_position);
+    g_key_file_set_integer(key_file, "Settings", "panel-track-width", controls->panel_track_width);
+    g_key_file_set_integer(key_file, "Settings", "panel-fixed-width", controls->panel_fixed_width);
+    g_key_file_set_boolean(key_file,
+                           "Settings",
+                           "panel-text-color-custom",
+                           controls->panel_text_color_custom);
+    color_string = gdk_rgba_to_string(&controls->panel_text_color);
+    g_key_file_set_string(key_file, "Settings", "panel-text-color", color_string);
+    g_free(color_string);
     data = g_key_file_to_data(key_file, &length, NULL);
 
     if (!g_file_set_contents(filename, data, length, &error))
@@ -841,6 +1100,25 @@ save_settings(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
 static void
 apply_settings(MprisControlsPlugin *controls)
 {
+    gtk_widget_set_visible(controls->panel_track_container, controls->show_panel_track);
+    gtk_widget_set_size_request(controls->panel_track_container,
+                                controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED
+                                    ? (gint) controls->panel_fixed_width
+                                    : -1,
+                                -1);
+    gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(controls->panel_track_container),
+                                              controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED
+                                                  ? (gint) controls->panel_fixed_width
+                                                  : -1);
+    gtk_scrolled_window_set_max_content_width(GTK_SCROLLED_WINDOW(controls->panel_track_container),
+                                              controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED
+                                                  ? (gint) controls->panel_fixed_width
+                                                  : -1);
+    gtk_box_reorder_child(GTK_BOX(controls->box),
+                          controls->panel_track_container,
+                          controls->panel_track_position == PANEL_TRACK_POSITION_BEFORE ? 0 : -1);
+    update_panel_track_display(controls);
+
     gtk_widget_set_visible(controls->previous_button, controls->show_previous);
     gtk_widget_set_visible(controls->next_button, controls->show_next);
 
@@ -867,6 +1145,21 @@ setting_toggled(GtkToggleButton *button, gpointer user_data)
 
     if (g_strcmp0(setting, "hover") == 0)
         controls->hover_enabled = active;
+    else if (g_strcmp0(setting, "panel-track") == 0)
+        controls->show_panel_track = active;
+    else if (g_strcmp0(setting, "panel-theme-color") == 0)
+    {
+        GtkWidget *color_button = g_object_get_data(G_OBJECT(button), "color-button");
+
+        controls->panel_text_color_custom = !active;
+        if (color_button != NULL)
+        {
+            if (!active)
+                gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(color_button),
+                                           &controls->panel_text_color);
+            gtk_widget_set_sensitive(color_button, !active);
+        }
+    }
     else if (g_strcmp0(setting, "artwork") == 0)
         controls->show_artwork = active;
     else if (g_strcmp0(setting, "artist") == 0)
@@ -927,6 +1220,66 @@ popup_position_changed(GtkComboBox *combo, gpointer user_data)
 }
 
 static void
+panel_track_position_changed(GtkComboBox *combo, gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+    const gchar *active_id = gtk_combo_box_get_active_id(combo);
+
+    controls->panel_track_position = g_strcmp0(active_id, "before") == 0
+                                         ? PANEL_TRACK_POSITION_BEFORE
+                                         : PANEL_TRACK_POSITION_AFTER;
+    apply_settings(controls);
+    save_settings(controls->plugin, controls);
+}
+
+static void
+panel_track_width_changed(GtkComboBox *combo, gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+    GtkWidget *fixed_width_spin;
+    const gchar *active_id = gtk_combo_box_get_active_id(combo);
+
+    controls->panel_track_width = g_strcmp0(active_id, "fixed") == 0
+                                      ? PANEL_TRACK_WIDTH_FIXED
+                                      : PANEL_TRACK_WIDTH_DYNAMIC;
+    fixed_width_spin = g_object_get_data(G_OBJECT(combo), "fixed-width-spin");
+    if (fixed_width_spin != NULL)
+    {
+        gtk_widget_set_sensitive(fixed_width_spin,
+                                 controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED);
+    }
+
+    apply_settings(controls);
+    save_settings(controls->plugin, controls);
+}
+
+static void
+panel_fixed_width_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+
+    controls->panel_fixed_width = (guint) gtk_spin_button_get_value_as_int(spin);
+    apply_settings(controls);
+    save_settings(controls->plugin, controls);
+}
+
+static void
+panel_text_color_changed(GtkColorButton *color_button, gpointer user_data)
+{
+    MprisControlsPlugin *controls = user_data;
+    GtkWidget *theme_color_check;
+
+    gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(color_button), &controls->panel_text_color);
+    controls->panel_text_color_custom = TRUE;
+    theme_color_check = g_object_get_data(G_OBJECT(color_button), "theme-color-check");
+    if (theme_color_check != NULL)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(theme_color_check), FALSE);
+
+    update_panel_track_display(controls);
+    save_settings(controls->plugin, controls);
+}
+
+static void
 attach_section_label(GtkGrid *grid, const gchar *text, gint row)
 {
     GtkWidget *label = gtk_label_new(NULL);
@@ -970,11 +1323,24 @@ popup_position_id(PopupPosition position)
     return "automatic";
 }
 
+static const gchar *
+panel_track_position_id(PanelTrackPosition position)
+{
+    return position == PANEL_TRACK_POSITION_BEFORE ? "before" : "after";
+}
+
+static const gchar *
+panel_track_width_id(PanelTrackWidth width)
+{
+    return width == PANEL_TRACK_WIDTH_FIXED ? "fixed" : "dynamic";
+}
+
 static void
 dismiss_metadata_window(MprisControlsPlugin *controls)
 {
     cancel_hover_timeout(&controls->hover_show_timeout_id);
     cancel_hover_timeout(&controls->hover_hide_timeout_id);
+    stop_panel_track_scroll(controls);
     gtk_widget_hide(controls->metadata_window);
 }
 
@@ -987,7 +1353,13 @@ configure_plugin(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
     GtkWidget *widget;
     GtkWidget *hover_delay_combo;
     GtkWidget *position_combo;
+    GtkWidget *panel_track_position_combo;
+    GtkWidget *panel_track_width_combo;
+    GtkWidget *panel_fixed_width_spin;
+    GtkWidget *panel_theme_color_check;
+    GtkWidget *panel_text_color_button;
     GtkWidget *parent;
+    GdkRGBA theme_color;
     gint row = 0;
 
     dismiss_metadata_window(controls);
@@ -1037,6 +1409,54 @@ configure_plugin(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(position_combo), popup_position_id(controls->popup_position));
     gtk_grid_attach(GTK_GRID(grid), position_combo, 1, row++, 1, 1);
 
+    attach_section_label(GTK_GRID(grid), "Panel track label", row++);
+    widget = create_setting_check("Show track label", "panel-track", controls->show_panel_track, controls);
+    gtk_grid_attach(GTK_GRID(grid), widget, 0, row++, 2, 1);
+
+    attach_setting_label(GTK_GRID(grid), "Position", row);
+    panel_track_position_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(panel_track_position_combo), "before", "Before controls");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(panel_track_position_combo), "after", "After controls");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(panel_track_position_combo),
+                                panel_track_position_id(controls->panel_track_position));
+    gtk_grid_attach(GTK_GRID(grid), panel_track_position_combo, 1, row++, 1, 1);
+
+    attach_setting_label(GTK_GRID(grid), "Width", row);
+    panel_track_width_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(panel_track_width_combo), "dynamic", "Dynamic");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(panel_track_width_combo), "fixed", "Fixed with scrolling");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(panel_track_width_combo),
+                                panel_track_width_id(controls->panel_track_width));
+    gtk_grid_attach(GTK_GRID(grid), panel_track_width_combo, 1, row++, 1, 1);
+
+    attach_setting_label(GTK_GRID(grid), "Fixed width (px)", row);
+    panel_fixed_width_spin = gtk_spin_button_new_with_range(100, 600, 10);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(panel_fixed_width_spin), controls->panel_fixed_width);
+    gtk_widget_set_sensitive(panel_fixed_width_spin,
+                             controls->panel_track_width == PANEL_TRACK_WIDTH_FIXED);
+    gtk_grid_attach(GTK_GRID(grid), panel_fixed_width_spin, 1, row++, 1, 1);
+
+    panel_theme_color_check = create_setting_check("Use theme text color",
+                                                   "panel-theme-color",
+                                                   !controls->panel_text_color_custom,
+                                                   controls);
+    gtk_grid_attach(GTK_GRID(grid), panel_theme_color_check, 0, row++, 2, 1);
+
+    attach_setting_label(GTK_GRID(grid), "Custom text color", row);
+    panel_text_color_button = gtk_color_button_new();
+    gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(panel_text_color_button), FALSE);
+    gtk_style_context_get_color(gtk_widget_get_style_context(controls->panel_track_label),
+                                GTK_STATE_FLAG_NORMAL,
+                                &theme_color);
+    gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(panel_text_color_button),
+                               controls->panel_text_color_custom
+                                   ? &controls->panel_text_color
+                                   : &theme_color);
+    gtk_widget_set_sensitive(panel_text_color_button, controls->panel_text_color_custom);
+    gtk_grid_attach(GTK_GRID(grid), panel_text_color_button, 1, row++, 1, 1);
+    g_object_set_data(G_OBJECT(panel_theme_color_check), "color-button", panel_text_color_button);
+    g_object_set_data(G_OBJECT(panel_text_color_button), "theme-color-check", panel_theme_color_check);
+
     attach_section_label(GTK_GRID(grid), "Panel controls", row++);
     widget = create_setting_check("Show previous button", "previous", controls->show_previous, controls);
     gtk_grid_attach(GTK_GRID(grid), widget, 0, row++, 2, 1);
@@ -1045,6 +1465,23 @@ configure_plugin(XfcePanelPlugin *plugin, MprisControlsPlugin *controls)
 
     g_signal_connect(hover_delay_combo, "changed", G_CALLBACK(hover_delay_changed), controls);
     g_signal_connect(position_combo, "changed", G_CALLBACK(popup_position_changed), controls);
+    g_signal_connect(panel_track_position_combo,
+                     "changed",
+                     G_CALLBACK(panel_track_position_changed),
+                     controls);
+    g_object_set_data(G_OBJECT(panel_track_width_combo), "fixed-width-spin", panel_fixed_width_spin);
+    g_signal_connect(panel_track_width_combo,
+                     "changed",
+                     G_CALLBACK(panel_track_width_changed),
+                     controls);
+    g_signal_connect(panel_fixed_width_spin,
+                     "value-changed",
+                     G_CALLBACK(panel_fixed_width_changed),
+                     controls);
+    g_signal_connect(panel_text_color_button,
+                     "color-set",
+                     G_CALLBACK(panel_text_color_changed),
+                     controls);
     g_signal_connect_swapped(dialog, "response", G_CALLBACK(gtk_widget_destroy), dialog);
 
     gtk_widget_show_all(dialog);
@@ -1060,6 +1497,7 @@ free_controls(gpointer data)
 
     cancel_hover_timeout(&controls->hover_show_timeout_id);
     cancel_hover_timeout(&controls->hover_hide_timeout_id);
+    stop_panel_track_scroll(controls);
 
     if (controls->metadata_window != NULL)
     {
@@ -1075,6 +1513,7 @@ free_controls(gpointer data)
         g_object_unref(controls->dbus_connection);
 
     g_free(controls->artwork_url);
+    g_free(controls->panel_track_text);
     g_free(controls->active_player);
     g_free(controls);
 }
@@ -1101,6 +1540,16 @@ mpris_controls_construct(XfcePanelPlugin *plugin)
     controls->previous_button = create_icon_button("media-skip-backward-symbolic", "Previous track", G_CALLBACK(previous_clicked), controls, NULL);
     controls->play_pause_button = create_icon_button("media-playback-start-symbolic", "Play", G_CALLBACK(play_pause_clicked), controls, &controls->play_pause_image);
     controls->next_button = create_icon_button("media-skip-forward-symbolic", "Next track", G_CALLBACK(next_clicked), controls, NULL);
+    controls->panel_track_label = gtk_drawing_area_new();
+    controls->panel_track_container = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_name(controls->panel_track_label, "mpris-controls-panel-track");
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(controls->panel_track_container),
+                                   GTK_POLICY_NEVER,
+                                   GTK_POLICY_NEVER);
+    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(controls->panel_track_container),
+                                        GTK_SHADOW_NONE);
+    gtk_container_add(GTK_CONTAINER(controls->panel_track_container), controls->panel_track_label);
+    g_signal_connect(controls->panel_track_label, "draw", G_CALLBACK(panel_track_draw), controls);
     gtk_widget_set_tooltip_text(controls->play_pause_button, NULL);
 
     controls->metadata_window = g_object_ref_sink(gtk_window_new(GTK_WINDOW_POPUP));
@@ -1157,6 +1606,7 @@ mpris_controls_construct(XfcePanelPlugin *plugin)
     gtk_box_pack_start(GTK_BOX(controls->box), controls->previous_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls->box), controls->play_pause_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls->box), controls->next_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(controls->box), controls->panel_track_container, FALSE, FALSE, 0);
 
     update_orientation(controls, plugin);
 
